@@ -19,8 +19,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
-	"github.com/aws/aws-sdk-go/aws/client"
-	"github.com/aws/aws-sdk-go/aws/ec2metadata"
 )
 
 var publicIP bool
@@ -109,11 +107,20 @@ func ClearToEndOfScreen() {
 	fmt.Fprint(os.Stderr, "[", "J")
 }
 
-func JumpTo(bastion string, s client.ConfigProvider, client *ec2.Client) {
-
-	bastionID, err := ec2metadata.New(s).GetMetadata("instance-id")
+func JumpTo(bastion string, cfg aws.Config, client *ec2.Client) {
+	imdsClient := imds.NewFromConfig(cfg)
+	var bastionID string
+	metadataOutput, err := imdsClient.GetMetadata(context.Background(), &imds.GetMetadataInput{Path: "instance-id"})
 	if err != nil {
-		bastionID = ""
+		log.Printf("Unable to fetch metadata: %v", err)
+	}
+	defer metadataOutput.Content.Close()
+	bastionIDBytes, err := io.ReadAll(metadataOutput.Content)
+	if err != nil {
+		log.Printf("Unable to read metadata output: %v", err)
+
+	} else {
+		bastionID = string(bastionIDBytes)
 	}
 
 	ec2Instances, err := client.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{})
@@ -244,9 +251,13 @@ func main() {
 			log.Printf("Unable to determine bastion region: %v", err)
 		}
 		defer metadataOutput.Content.Close()
+		regionBytes, err := io.ReadAll(metadataOutput.Content)
+		if err != nil {
+			log.Printf("Unable to read metadata output: %v", err)
+		}
 
 		// Make API calls from the bastion's region.
-		cfg.Region = aws.String(metadataOutput)
+		cfg.Region = string(regionBytes)
 	} else {
 		var err error
 		cfg, err = config.LoadDefaultConfig(context.Background())
@@ -262,5 +273,5 @@ func main() {
 		return
 	}
 
-	JumpTo(os.Getenv("JUMP_BASTION"), s, svc)
+	JumpTo(os.Getenv("JUMP_BASTION"), cfg, svc)
 }
