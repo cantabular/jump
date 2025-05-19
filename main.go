@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/client"
@@ -31,9 +32,9 @@ func (i *Instance) preferredIP() string {
 }
 
 func ShowInstances(instances []*Instance) {
-	table := tablewriter.NewWriter(os.Stderr)
-	table.SetAlignment(tablewriter.ALIGN_RIGHT)
-	table.SetHeader([]string{
+	builder := tablewriter.NewConfigBuilder().WithRowAlignment(tw.AlignRight)
+	table := tablewriter.NewTable(os.Stderr, tablewriter.WithConfig(builder.Build()))
+	table.Header([]string{
 		"N", "ID", "Name", "S", "IP Addr", "Launch",
 		"ICMP", "SSH", "HTTP", "HTTPS"})
 
@@ -49,7 +50,10 @@ func ShowInstances(instances []*Instance) {
 		table.Append(row)
 	}
 
-	table.Render()
+	err := table.Render()
+	if err != nil {
+		log.Fatalf("Table render failed: %v", err)
+	}
 }
 
 func GetInstanceFromUser(max int) int {
