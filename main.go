@@ -239,18 +239,14 @@ func main() {
 
 		// TODO: reuse IMDS client?
 		imdsClient := imds.NewFromConfig(cfg)
-		metadataOutput, err := imdsClient.GetMetadata(context.Background(), &imds.GetMetadataInput{Path: path})
-		if err != nil {
-			return "", err
-		}
-		defer metadataOutput.Content.Close()
-
-		region, err := ec2metadata.New(s).Region()
+		metadataOutput, err := imdsClient.GetMetadata(context.Background(), &imds.GetMetadataInput{Path: "placement/region"})
 		if err != nil {
 			log.Printf("Unable to determine bastion region: %v", err)
 		}
+		defer metadataOutput.Content.Close()
+
 		// Make API calls from the bastion's region.
-		s.Config.Region = aws.String(region)
+		cfg.Region = aws.String(metadataOutput)
 	} else {
 		var err error
 		cfg, err = config.LoadDefaultConfig(context.Background())
