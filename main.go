@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -14,12 +15,10 @@ import (
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/client"
-	"github.com/aws/aws-sdk-go/aws/defaults"
-	"github.com/aws/aws-sdk-go/aws/ec2metadata"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 )
 
 var publicIP bool
@@ -108,14 +107,23 @@ func ClearToEndOfScreen() {
 	fmt.Fprint(os.Stderr, "[", "J")
 }
 
-func JumpTo(bastion string, s client.ConfigProvider, client *ec2.EC2) {
-
-	bastionID, err := ec2metadata.New(s).GetMetadata("instance-id")
+func JumpTo(bastion string, cfg aws.Config, client *ec2.Client) {
+	imdsClient := imds.NewFromConfig(cfg)
+	var bastionID string
+	metadataOutput, err := imdsClient.GetMetadata(context.Background(), &imds.GetMetadataInput{Path: "instance-id"})
 	if err != nil {
-		bastionID = ""
+		log.Printf("Unable to fetch metadata: %v", err)
+	}
+	defer metadataOutput.Content.Close()
+	bastionIDBytes, err := io.ReadAll(metadataOutput.Content)
+	if err != nil {
+		log.Printf("Unable to read metadata output: %v", err)
+
+	} else {
+		bastionID = string(bastionIDBytes)
 	}
 
-	ec2Instances, err := client.DescribeInstances(&ec2.DescribeInstancesInput{})
+	ec2Instances, err := client.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{})
 	if err != nil {
 		log.Fatal("DescribeInstances error:", err)
 	}
@@ -157,7 +165,7 @@ func filterInstancesByVPC(instances []*Instance, vpcID string) []*Instance {
 	return filtered
 }
 
-func Watch(c *ec2.EC2) {
+func Watch(c *ec2.Client) {
 
 	finish := make(chan struct{})
 	go func() {
@@ -172,7 +180,7 @@ func Watch(c *ec2.EC2) {
 		queryStart := time.Now()
 		ConfigureHTTP(true)
 
-		ec2Instances, err := c.DescribeInstances(&ec2.DescribeInstancesInput{})
+		ec2Instances, err := c.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{})
 		if err != nil {
 			log.Fatal("DescribeInstances error:", err)
 		}
@@ -200,7 +208,7 @@ func Watch(c *ec2.EC2) {
 const N_TABLE_DECORATIONS = 4
 
 func main() {
-
+	var cfg aws.Config
 	log.SetFlags(0)
 
 	if os.Getenv("SSH_AUTH_SOCK") == "" {
@@ -211,8 +219,6 @@ func main() {
 		publicIP = true
 	}
 
-	s := session.New()
-
 	if os.Getenv("JUMP_BASTION") != "" {
 		// Use the ssh connection to dial remotes
 		bastionDialer, err := BastionDialer(os.Getenv("JUMP_BASTION"))
@@ -221,29 +227,51 @@ func main() {
 		}
 		bastionTransport := &http.Transport{Dial: bastionDialer}
 
+		bastionHTTPClient := http.Client{
+			Transport: bastionTransport,
+			Timeout:   30 * time.Second, // Set a reasonable timeout
+		}
+
 		// The EC2RoleProvider overrides the client configuration if
 		// .HTTPClient == http.DefaultClient. Therefore, take a copy.
 		// Also, have to re-initialise the default CredChain to make
 		// use of HTTPClient set after session.New().
-		useClient := *http.DefaultClient
-		useClient.Transport = bastionTransport
-		s.Config.HTTPClient = &useClient
-		s.Config.Credentials = defaults.CredChain(s.Config, defaults.Handlers())
+		// TODO: delete below commented lines
+		//	useClient := *http.DefaultClient
+		//	useClient.Transport = bastionTransport
+		cfg, err := config.LoadDefaultConfig(context.Background(), config.WithHTTPClient(&bastionHTTPClient))
+		if err != nil {
+			log.Fatalf("Unable to load AWS config: %v", err)
+		}
 
-		region, err := ec2metadata.New(s).Region()
+		// TODO: reuse IMDS client?
+		imdsClient := imds.NewFromConfig(cfg)
+		metadataOutput, err := imdsClient.GetMetadata(context.Background(), &imds.GetMetadataInput{Path: "placement/region"})
 		if err != nil {
 			log.Printf("Unable to determine bastion region: %v", err)
 		}
+		defer metadataOutput.Content.Close()
+		regionBytes, err := io.ReadAll(metadataOutput.Content)
+		if err != nil {
+			log.Printf("Unable to read metadata output: %v", err)
+		}
+
 		// Make API calls from the bastion's region.
-		s.Config.Region = aws.String(region)
+		cfg.Region = string(regionBytes)
+	} else {
+		var err error
+		cfg, err = config.LoadDefaultConfig(context.Background())
+		if err != nil {
+			log.Fatalf("Unable to load AWS config: %v", err)
+		}
 	}
 
-	client := ec2.New(s)
+	svc := ec2.NewFromConfig(cfg)
 
 	if len(os.Args) > 1 && os.Args[1] == "@" {
-		Watch(client)
+		Watch(svc)
 		return
 	}
 
-	JumpTo(os.Getenv("JUMP_BASTION"), s, client)
+	JumpTo(os.Getenv("JUMP_BASTION"), cfg, svc)
 }
