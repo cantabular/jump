@@ -5,20 +5,23 @@ import (
 	"sort"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
 type Instance struct {
-	InstanceID, PrivateIP, PublicIP, State, VPCID string
-	Up                                            time.Duration
-	Tags                                          map[string]string
-	ICMPPing, SSHPing, HTTPPing, HTTPSPing        <-chan PingResponse
+	InstanceID, PrivateIP, PublicIP, VPCID string
+	State                                  types.InstanceStateName
+	Up                                     time.Duration
+	Tags                                   map[string]string
+	ICMPPing, SSHPing, HTTPPing, HTTPSPing <-chan PingResponse
 }
 
-func NewInstance(i *ec2.Instance) *Instance {
+func NewInstance(i *types.Instance) *Instance {
 	return &Instance{
-		*i.InstanceId, *i.PrivateIpAddress, *i.PublicIpAddress, *i.State.Name,
+		*i.InstanceId, *i.PrivateIpAddress, *i.PublicIpAddress,
 		*i.VpcId,
+		i.State.Name,
 		time.Since(*i.LaunchTime),
 		TagMap(i.Tags),
 		ICMPPing(*i.PrivateIpAddress),
@@ -28,10 +31,10 @@ func NewInstance(i *ec2.Instance) *Instance {
 	}
 }
 
-func TagMap(ts []*ec2.Tag) map[string]string {
+func TagMap(ts []types.Tag) map[string]string {
 	m := map[string]string{}
 	for _, t := range ts {
-		m[*t.Key] = *t.Value
+		m[string(*t.Key)] = string(*t.Value)
 	}
 	return m
 }
@@ -84,7 +87,7 @@ func InstancesFromEC2Result(in *ec2.DescribeInstancesOutput) []*Instance {
 			if oi.PrivateIpAddress == nil || oi.PublicIpAddress == nil {
 				continue
 			}
-			out = append(out, NewInstance(oi))
+			out = append(out, NewInstance(&oi))
 		}
 	}
 	sort.Sort(InstancesByName(out))
