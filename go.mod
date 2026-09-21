@@ -1,6 +1,6 @@
 module github.com/sensiblecodeio/jump
 
-go 1.25.2
+go 1.27
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.39.2
